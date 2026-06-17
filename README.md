@@ -169,6 +169,9 @@ playlists to their variants, estimate duration from `#EXTINF`, and choose the
 longest usable stream.
 For HLS master playlists, higher bandwidth/resolution variants are preferred
 among valid candidates.
+The interactive starter uses a 60 second minimum duration by default, so short
+placeholder/sample clips are ignored. Set `Mindestdauer Sekunden` to `0` only
+when you intentionally test short clips.
 
 Disable the progress line:
 

@@ -57,6 +57,7 @@ ATTR_URL_PATTERN = re.compile(
 VOE_HINT_PATTERN = re.compile(r"""voe|/e/|embed""", re.IGNORECASE)
 CLOUDFLARE_DOH_TEMPLATE = "https://chrome.cloudflare-dns.com/dns-query"
 PROFILE_DIR = Path(__file__).resolve().parent / ".chromium_converter_profile"
+DEFAULT_PAGE_MEDIA_MIN_DURATION = 60.0
 AD_BLOCK_HOST_PARTS = (
     "doubleclick.net",
     "googlesyndication.com",
@@ -181,7 +182,17 @@ def is_voe_url(url: str) -> bool:
         parsed = urlparse(clean_media_url(url))
     except ValueError:
         return False
-    return "voe" in parsed.netloc.lower() or "/hosters/voe" in parsed.path.lower()
+
+    path = parsed.path.lower().strip("/")
+    if "/hosters/voe" in parsed.path.lower():
+        return True
+    if "voe" not in parsed.netloc.lower():
+        return False
+
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 2 and parts[0] in {"e", "embed", "v"}:
+        return len(parts[1]) >= 4
+    return False
 
 
 def text_variants(text: str) -> list[str]:
@@ -374,6 +385,27 @@ def choose_best_media_url(
         )
 
     return best_url
+
+
+def page_media_min_duration(min_duration: float) -> float:
+    return min_duration if min_duration > 0 else DEFAULT_PAGE_MEDIA_MIN_DURATION
+
+
+def try_choose_best_media_url(
+    urls: list[str],
+    min_duration: float = 0.0,
+    capture_log: list[str] | None = None,
+) -> str | None:
+    try:
+        return choose_best_media_url(
+            urls,
+            min_duration=min_duration,
+            capture_log=capture_log,
+        )
+    except VoeConvertError as exc:
+        if capture_log is not None:
+            capture_log.append(f"Ignored media candidates: {exc}")
+        return None
 
 
 def extract_link_candidates(html: str, base_url: str) -> list[str]:
@@ -1020,7 +1052,7 @@ def browser_convert_voe_url(
                 captured_media=captured_media,
                 settle_seconds=settle_seconds,
             )
-            best = choose_best_media_url(
+            best = try_choose_best_media_url(
                 captured_media,
                 min_duration=min_duration,
                 capture_log=capture_log,
@@ -1102,7 +1134,7 @@ def browser_convert_input_url(
                     captured_media=captured_media,
                     auto_click_voe=auto_click_voe,
                     prefer_media=True,
-                    voe_fallback_seconds=min(60, max(10, timeout // 3)),
+                    voe_fallback_seconds=min(20, max(10, timeout // 10)),
                 )
 
             if not voe_urls and captured_media:
@@ -1111,27 +1143,30 @@ def browser_convert_input_url(
                     captured_media=captured_media,
                     settle_seconds=media_settle_seconds,
                 )
-                best_media = choose_best_media_url(
+                best_media = try_choose_best_media_url(
                     captured_media,
-                    min_duration=min_duration,
+                    min_duration=page_media_min_duration(min_duration),
                     capture_log=capture_log,
                 )
                 page_title = extract_browser_page_title(page) or page_title
-                if not best_media:
+                if not best_media and captured_voe:
+                    voe_urls = unique(captured_voe)
+                elif not best_media:
                     raise VoeConvertError("No usable media candidate found.")
-                cookie_header = cookie_header_for_url(context, best_media)
-                results = [
-                    {
-                        "url": url,
-                        "voe": url,
-                        "direct": best_media,
-                        "title": page_title or "",
-                        "referer": url,
-                        "cookie_header": cookie_header,
-                        "status": "ok",
-                    }
-                ]
-                return results
+                else:
+                    cookie_header = cookie_header_for_url(context, best_media)
+                    results = [
+                        {
+                            "url": url,
+                            "voe": url,
+                            "direct": best_media,
+                            "title": page_title or "",
+                            "referer": url,
+                            "cookie_header": cookie_header,
+                            "status": "ok",
+                        }
+                    ]
+                    return results
 
             if not voe_urls:
                 raise VoeConvertError("No VOE link found in browser mode.")

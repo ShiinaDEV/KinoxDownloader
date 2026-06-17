@@ -7,7 +7,7 @@ $ConverterPath = Join-Path $Root "voe_converter.py"
 function Get-DefaultSettings {
     return [ordered]@{
         download_dir = (Join-Path $Root "downloads")
-        min_duration = 0
+        min_duration = 60
         media_settle_seconds = 15
         cloudflare_dns = $true
         reset_browser_profile = $false
