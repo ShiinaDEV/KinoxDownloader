@@ -491,6 +491,9 @@ def configure_chromium_profile(
         "mode": "secure" if use_cloudflare_dns else "automatic",
         "templates": CLOUDFLARE_DOH_TEMPLATE if use_cloudflare_dns else "",
     }
+    prefs["session"] = {
+        "restore_on_startup": 5,
+    }
 
     prefs_path.write_text(
         json.dumps(prefs, indent=2, sort_keys=True),
@@ -533,6 +536,20 @@ def launch_browser_context(
         args=chromium_launch_args(use_cloudflare_dns),
         ignore_https_errors=ignore_https_errors,
     )
+
+
+def browser_primary_page(context):
+    pages = list(context.pages)
+    if not pages:
+        return context.new_page()
+
+    primary = pages[0]
+    for page in pages[1:]:
+        try:
+            page.close()
+        except Exception:
+            pass
+    return primary
 
 
 def adblock_reason(url: str) -> str | None:
@@ -863,14 +880,24 @@ def wait_for_browser_voe_links(
     captured_voe: list[str] | None = None,
     captured_media: list[str] | None = None,
     auto_click_voe: bool = False,
+    prefer_media: bool = False,
+    voe_fallback_seconds: int = 60,
 ) -> list[str]:
     deadline = time.time() + timeout
     last_click_attempt = 0.0
+    first_voe_at: float | None = None
+    remembered_links: list[str] = []
     while time.time() < deadline:
         links = list(captured_voe or [])
         links.extend(collect_voe_links_from_browser(context))
         if links:
-            return unique(links)
+            remembered_links = unique(links)
+            if not prefer_media:
+                return remembered_links
+            if first_voe_at is None:
+                first_voe_at = time.time()
+            if time.time() - first_voe_at >= voe_fallback_seconds:
+                return remembered_links
         if captured_media:
             return []
 
@@ -879,7 +906,7 @@ def wait_for_browser_voe_links(
             last_click_attempt = time.time()
 
         time.sleep(1)
-    return []
+    return remembered_links if remembered_links and not captured_media else []
 
 
 def wait_for_media_candidates(
@@ -1057,7 +1084,7 @@ def browser_convert_input_url(
             context.on("request", handle_browser_request)
             context.on("response", handle_browser_response)
 
-            page = context.new_page()
+            page = browser_primary_page(context)
             if adblock:
                 install_popup_blocker(page, capture_log)
                 if not is_voe_url(url):
@@ -1074,6 +1101,8 @@ def browser_convert_input_url(
                     captured_voe=captured_voe,
                     captured_media=captured_media,
                     auto_click_voe=auto_click_voe,
+                    prefer_media=True,
+                    voe_fallback_seconds=min(60, max(10, timeout // 3)),
                 )
 
             if not voe_urls and captured_media:
@@ -1330,17 +1359,41 @@ def progress_percent(done_seconds: float, total_seconds: float) -> float:
 def print_download_progress(done_seconds: float, total_seconds: float) -> None:
     if total_seconds > 0:
         percent = progress_percent(done_seconds, total_seconds)
-        message = f"Fortschritt: {percent:5.1f}%"
+        filled = int(percent // 4)
+        bar = "#" * filled + "-" * (25 - filled)
+        message = f"Fortschritt: [{bar}] {percent:5.1f}%"
     else:
         message = f"Fortschritt: {done_seconds:0.0f}s geladen"
 
-    print(message, flush=True)
+    width = max(40, shutil.get_terminal_size((100, 20)).columns - 1)
+    print("\r" + message[:width].ljust(width), end="", flush=True)
 
 
 def progress_bucket(done_seconds: float, total_seconds: float) -> int:
     if total_seconds > 0:
         return int(progress_percent(done_seconds, total_seconds) // 5) * 5
     return int(done_seconds // 30)
+
+
+def find_ffmpeg_executable() -> str:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        return ffmpeg_path
+
+    try:
+        import imageio_ffmpeg
+    except ImportError as exc:
+        raise VoeConvertError(
+            "ffmpeg was not found. Run install.bat first, or install ffmpeg manually."
+        ) from exc
+
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    if ffmpeg_path and Path(ffmpeg_path).exists():
+        return ffmpeg_path
+
+    raise VoeConvertError(
+        "ffmpeg was not found. Run install.bat first, or install ffmpeg manually."
+    )
 
 
 def download_with_ffmpeg(
@@ -1351,8 +1404,7 @@ def download_with_ffmpeg(
     show_progress: bool = True,
     container: str = "mkv",
 ) -> None:
-    if not shutil.which("ffmpeg"):
-        raise VoeConvertError("ffmpeg was not found on PATH.")
+    ffmpeg_executable = find_ffmpeg_executable()
 
     container = (container or "mkv").lower()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1364,7 +1416,7 @@ def download_with_ffmpeg(
 
     headers = "".join(f"{key}: {value}\r\n" for key, value in headers_map.items())
     command = [
-        "ffmpeg",
+        ffmpeg_executable,
         "-hide_banner",
         "-nostats",
         "-loglevel",
@@ -1424,6 +1476,8 @@ def download_with_ffmpeg(
                 print_download_progress(total_seconds or last_done, total_seconds)
 
     return_code = process.wait()
+    if show_progress:
+        print()
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, command)
 

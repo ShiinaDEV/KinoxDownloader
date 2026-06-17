@@ -3,5 +3,12 @@
 *.webm
 *.mp3
 *.log
+capture-*.txt
+capture-demo.txt
+downloads/
+.chromium_converter_profile/
+.venv/
+venv/
 __pycache__/
 .env
+voe_converter_settings.json

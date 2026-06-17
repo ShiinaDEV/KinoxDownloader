@@ -1,0 +1,13 @@
+{
+    "download_dir": "downloads",
+    "min_duration": 0,
+    "media_settle_seconds": 15,
+    "cloudflare_dns": true,
+    "reset_browser_profile": false,
+    "capture_log": true,
+    "auto_click_voe": false,
+    "strict_https": false,
+    "no_progress": false,
+    "container": "mkv",
+    "adblock": true
+}

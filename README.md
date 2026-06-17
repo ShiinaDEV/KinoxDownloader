@@ -5,6 +5,32 @@ You can also pass a webpage/player URL; the tool will try to scrape a VOE link
 from that page first.
 It does not import or modify the installed `aniworld` package.
 
+## Install
+
+Requirements:
+
+- Windows
+- Python 3.12 or newer
+
+Install everything:
+
+```powershell
+.\install.bat
+```
+
+`install.bat` installs Python dependencies from `requirements.txt`, installs
+Patchright Chromium, and provides an ffmpeg fallback through `imageio-ffmpeg`.
+If normal `ffmpeg` is already available on PATH, the converter uses that.
+
+You can also start directly:
+
+```powershell
+.\start-converter.bat
+```
+
+The starter checks whether the required Python packages exist and runs
+`install.bat` automatically when needed.
+
 ## Examples
 
 Interactive starter:
@@ -82,8 +108,8 @@ In browser download mode, Chromium is used to find the media link and capture
 session cookies. After that Chromium closes and `ffmpeg` continues the download
 in the terminal with progress.
 The terminal output stays quiet while the browser is waiting. Once media is
-found, it prints `Download gestartet` once and then prints compact progress
-updates, normally in 5 percent steps.
+found, it prints `Download gestartet` once and then updates one compact
+progress line, throttled to avoid console spam.
 Downloads are named from the page title when possible. The converter checks
 `og:title`, `twitter:title`, the first `h1`, and then the browser tab title.
 Common page suffixes such as `Stream online anschauen`, `downloaden auf ...`,
@@ -173,6 +199,8 @@ python .\voe_converter.py --no-scrape-page "https://voe.sx/e/DEIN_CODE"
 - Browser mode blocks common ad/redirect domains, neutralizes `window.open`,
   closes popup tabs, and keeps the main page from navigating away to VOE unless
   `--no-adblock` is used.
+- For normal webpage inputs, browser mode waits for direct media requests before
+  opening a discovered VOE page as a fallback.
 - Browser mode ignores HTTPS certificate errors unless `--strict-https` is used.
 - Browser mode scans request URLs and text-like response bodies.
 - Browser mode ranks captured media candidates and prefers the longest HLS
