@@ -1410,6 +1410,44 @@ def progress_bucket(done_seconds: float, total_seconds: float) -> int:
     return int(done_seconds // 30)
 
 
+def is_ffmpeg_progress_line(line: str) -> bool:
+    progress_keys = (
+        "bitrate",
+        "drop_frames",
+        "dup_frames",
+        "fps",
+        "frame",
+        "out_time",
+        "out_time_ms",
+        "out_time_us",
+        "progress",
+        "speed",
+        "stream_",
+        "total_size",
+    )
+    return any(line.startswith(f"{key}=") for key in progress_keys)
+
+
+def redact_ffmpeg_diagnostic(line: str) -> str:
+    line = re.sub(r"Cookie:\s*[^\r\n]+", "Cookie: <redacted>", line, flags=re.IGNORECASE)
+    line = re.sub(r"(https?://[^\s]+)", "<url>", line)
+    return line
+
+
+def format_ffmpeg_return_code(return_code: int) -> str:
+    if return_code >= 0:
+        unsigned_code = return_code
+        signed_code = return_code - (1 << 32) if return_code > 0x7FFFFFFF else return_code
+        if signed_code != return_code:
+            return f"{return_code} (0x{unsigned_code:08x}, signed {signed_code})"
+        return f"{return_code} (0x{unsigned_code:08x})"
+    return str(return_code)
+
+
+def temporary_download_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.stem}.part{output_path.suffix}")
+
+
 def find_ffmpeg_executable() -> str:
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path:
@@ -1438,11 +1476,13 @@ def download_with_ffmpeg(
     cookie_header: str | None = None,
     show_progress: bool = True,
     container: str = "mkv",
+    download_retries: int = 3,
 ) -> None:
     ffmpeg_executable = find_ffmpeg_executable()
 
     container = (container or "mkv").lower()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = temporary_download_path(output_path)
     headers_map = dict(DEFAULT_HEADERS)
     if referer:
         headers_map["Referer"] = referer
@@ -1450,7 +1490,7 @@ def download_with_ffmpeg(
         headers_map["Cookie"] = cookie_header
 
     headers = "".join(f"{key}: {value}\r\n" for key, value in headers_map.items())
-    command = [
+    command_prefix = [
         ffmpeg_executable,
         "-hide_banner",
         "-nostats",
@@ -1458,6 +1498,22 @@ def download_with_ffmpeg(
         "error",
         "-progress",
         "pipe:1",
+        "-rw_timeout",
+        "15000000",
+        "-reconnect",
+        "1",
+        "-reconnect_streamed",
+        "1",
+        "-reconnect_on_network_error",
+        "1",
+        "-reconnect_on_http_error",
+        "408,429,500,502,503,504",
+        "-reconnect_delay_max",
+        "5",
+        "-reconnect_max_retries",
+        "3",
+        "-reconnect_delay_total_max",
+        "30",
         "-headers",
         headers,
         "-i",
@@ -1466,55 +1522,79 @@ def download_with_ffmpeg(
         "copy",
     ]
     if container == "mp4":
-        command.extend(["-movflags", "+faststart"])
-    command.extend(["-y", str(output_path)])
+        command_prefix.extend(["-movflags", "+faststart"])
 
     total_seconds = estimate_media_duration(media_url)
     if show_progress:
         print(f"Download gestartet: {output_path.name}", flush=True)
 
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    attempts = max(1, download_retries)
+    last_message = ""
+    for attempt in range(1, attempts + 1):
+        if temporary_path.exists():
+            temporary_path.unlink()
+        command = [*command_prefix, "-y", str(temporary_path)]
+        if show_progress and attempt > 1:
+            print(f"Download erneut versucht ({attempt}/{attempts})...", flush=True)
 
-    last_done = 0.0
-    last_bucket = -1
-    last_progress_time = 0.0
-    assert process.stdout is not None
-    for line in process.stdout:
-        line = line.strip()
-        if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-            last_done = parse_ffmpeg_time(line.split("=", 1)[1])
-            if show_progress:
-                bucket = progress_bucket(last_done, total_seconds)
-                now = time.time()
-                if bucket != last_bucket or now - last_progress_time >= 30:
-                    print_download_progress(last_done, total_seconds)
-                    last_bucket = bucket
-                    last_progress_time = now
-        elif line.startswith("out_time="):
-            last_done = parse_ffmpeg_time(line.split("=", 1)[1])
-            if show_progress:
-                bucket = progress_bucket(last_done, total_seconds)
-                now = time.time()
-                if bucket != last_bucket or now - last_progress_time >= 30:
-                    print_download_progress(last_done, total_seconds)
-                    last_bucket = bucket
-                    last_progress_time = now
-        elif line.startswith("progress=end"):
-            if show_progress:
-                print_download_progress(total_seconds or last_done, total_seconds)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
 
-    return_code = process.wait()
-    if show_progress:
-        print()
-    if return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command)
+        last_done = 0.0
+        last_bucket = -1
+        last_progress_time = 0.0
+        diagnostic_lines: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.strip()
+            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+                last_done = parse_ffmpeg_time(line.split("=", 1)[1])
+                if show_progress:
+                    bucket = progress_bucket(last_done, total_seconds)
+                    now = time.time()
+                    if bucket != last_bucket or now - last_progress_time >= 30:
+                        print_download_progress(last_done, total_seconds)
+                        last_bucket = bucket
+                        last_progress_time = now
+            elif line.startswith("out_time="):
+                last_done = parse_ffmpeg_time(line.split("=", 1)[1])
+                if show_progress:
+                    bucket = progress_bucket(last_done, total_seconds)
+                    now = time.time()
+                    if bucket != last_bucket or now - last_progress_time >= 30:
+                        print_download_progress(last_done, total_seconds)
+                        last_bucket = bucket
+                        last_progress_time = now
+            elif line.startswith("progress=end"):
+                if show_progress:
+                    print_download_progress(total_seconds or last_done, total_seconds)
+            elif line and not is_ffmpeg_progress_line(line):
+                diagnostic_lines.append(redact_ffmpeg_diagnostic(line))
+                diagnostic_lines = diagnostic_lines[-8:]
+
+        return_code = process.wait()
+        if show_progress:
+            print()
+        if return_code == 0:
+            temporary_path.replace(output_path)
+            return
+
+        details = "\n".join(diagnostic_lines)
+        last_message = f"ffmpeg failed with exit code {format_ffmpeg_return_code(return_code)}."
+        if details:
+            last_message = f"{last_message}\nLast ffmpeg output:\n{details}"
+        else:
+            last_message = f"{last_message}\nNo ffmpeg diagnostic output was captured."
+
+    if temporary_path.exists():
+        temporary_path.unlink()
+    raise VoeConvertError(last_message)
 
 
 def download_items_with_browser_context(
@@ -1524,6 +1604,7 @@ def download_items_with_browser_context(
     base_index: int,
     show_progress: bool = True,
     container: str = "mkv",
+    download_retries: int = 3,
 ) -> None:
     container = (container or "mkv").lower()
     for item_index, item in enumerate(items, start=1):
@@ -1537,6 +1618,7 @@ def download_items_with_browser_context(
             cookie_header=cookie_header,
             show_progress=show_progress,
             container=container,
+            download_retries=download_retries,
         )
         item["file"] = str(target)
 
@@ -1574,6 +1656,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="Number of conversion attempts per URL.",
+    )
+    parser.add_argument(
+        "--download-retries",
+        type=int,
+        default=3,
+        help="Number of ffmpeg download attempts after network or HTTP failures.",
     )
     parser.add_argument(
         "--timeout",
@@ -1764,6 +1852,7 @@ def main(argv: list[str] | None = None) -> int:
                         cookie_header=item.get("cookie_header"),
                         show_progress=not args.no_progress,
                         container=args.container,
+                        download_retries=args.download_retries,
                     )
                     item["file"] = str(target)
 

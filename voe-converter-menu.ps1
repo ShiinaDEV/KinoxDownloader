@@ -16,6 +16,7 @@ function Get-DefaultSettings {
         strict_https = $false
         no_progress = $false
         container = "mkv"
+        download_retries = 3
         adblock = $true
     }
 }
@@ -97,7 +98,8 @@ function Show-Settings {
     Write-Host "8. Strict HTTPS:          $($Settings.strict_https)"
     Write-Host "9. Fortschritt aus:       $($Settings.no_progress)"
     Write-Host "10. Container:            $($Settings.container)"
-    Write-Host "11. Adblock/Popupschutz:  $($Settings.adblock)"
+    Write-Host "11. Download-Versuche:    $($Settings.download_retries)"
+    Write-Host "12. Adblock/Popupschutz:  $($Settings.adblock)"
     Write-Host ""
 }
 
@@ -151,6 +153,9 @@ function Edit-Settings {
                 }
             }
             "11" {
+                $Settings.download_retries = [int](Read-WithDefault "Download-Versuche bei Abbruch" ([string]$Settings.download_retries))
+            }
+            "12" {
                 $Settings.adblock = Read-Boolean "Adblock/Popupschutz im Browser nutzen" ([bool]$Settings.adblock)
             }
             default {
@@ -172,6 +177,7 @@ function Build-Args {
         "--download",
         "--download-dir", $Settings.download_dir,
         "--container", $Settings.container,
+        "--download-retries", ([string]$Settings.download_retries),
         "--media-settle-seconds", ([string]$Settings.media_settle_seconds),
         $Url
     )

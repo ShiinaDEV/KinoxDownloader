@@ -115,6 +115,10 @@ Downloads are named from the page title when possible. The converter checks
 Common page suffixes such as `Stream online anschauen`, `downloaden auf ...`,
 and domain names are removed. If no useful title remains, it falls back to the
 URL-based filename.
+Downloads use ffmpeg HTTP reconnect options and are retried up to three times
+by default if the stream drops midway. Tune this with `--download-retries 5`.
+The final file is only replaced after a successful attempt; incomplete attempts
+use a temporary `.part` file.
 
 Browser mode ignores broken HTTPS certificates by default, because some player
 pages use mismatched certificates. To enforce strict certificate checks:

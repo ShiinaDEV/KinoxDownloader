@@ -9,5 +9,6 @@
     "strict_https": false,
     "no_progress": false,
     "container": "mkv",
+    "download_retries": 3,
     "adblock": true
 }
