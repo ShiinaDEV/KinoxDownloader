@@ -3,7 +3,6 @@
 Standalone tool for converting VOE page/embed links to direct media links.
 You can also pass a webpage/player URL; the tool will try to scrape a VOE link
 from that page first.
-It does not import or modify the installed `aniworld` package.
 
 ## Install
 
